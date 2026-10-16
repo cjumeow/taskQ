@@ -1,0 +1,24 @@
+[project]
+name = "taskq"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "GuanJun Liu", email = "andrew289742@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "redis>=8.1.0",
+]
+
+[project.scripts]
+taskq = "taskq:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
