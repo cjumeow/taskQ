@@ -23,7 +23,7 @@ POLL_SECONDS = 0.5  # How long to wait before polling again when the queue is em
 
 
 @contextmanager
-def heartbeat(broker: Broker, task_id: str, worker_id: str) -> Generator[threading.Event, None, None]:
+def heartbeat(broker: Broker, task_id: str, token: int) -> Generator[threading.Event, None, None]:
     """Keep renewing the lease in a background thread while the body runs.
 
     Yields an Event that gets set if the lease is lost.
@@ -34,7 +34,7 @@ def heartbeat(broker: Broker, task_id: str, worker_id: str) -> Generator[threadi
     def run() -> None:
         # wait() returns True as soon as stop is "set", so the loop exits right after the work finishes
         while not stop.wait(HEARTBEAT_SECONDS):
-            if not broker.heartbeat(task_id, worker_id, LEASE_SECONDS):
+            if not broker.heartbeat(task_id, token, LEASE_SECONDS):
                 print(f"lost lease on {task_id}, stopping heartbeat")
                 lost.set()
                 return
@@ -43,10 +43,11 @@ def heartbeat(broker: Broker, task_id: str, worker_id: str) -> Generator[threadi
     thread = threading.Thread(target=run, name=f"heartbeat-{task_id}", daemon=True)
     thread.start()
     try:
-        yield lost
+        yield lost # Signal that the lease is lost
     finally:
         stop.set()
         thread.join()
+
 
 def main() -> None:
     r = redis.Redis(host="localhost", port=6379, decode_responses=True)
@@ -63,22 +64,23 @@ def main() -> None:
             for task_id in broker.reap():
                 print(f"reaped {task_id} (lease expired, back to ready)")
 
-            task_id = broker.lease(worker_id, LEASE_SECONDS)
-            if task_id is None:
+            leased = broker.lease(worker_id, LEASE_SECONDS)
+            if leased is None:
                 time.sleep(POLL_SECONDS)
                 continue
+            task_id, token = leased
 
-            print(f"got {task_id}, working...")
-            with heartbeat(broker, task_id, worker_id) as lost:
+            print(f"got {task_id} (token {token}), working...")
+            with heartbeat(broker, task_id, token) as lost:
                 time.sleep(WORK_SECONDS)  # Pretend to do the work
 
             if lost.is_set():
-                print(f"done {task_id}, but the lease was lost mid-way (someone may have redone it!)")
-            # ack still runs after a lost lease: deliberate hole, closed by fencing tokens in M2
-            if broker.ack(task_id):
+                print(f"finished {task_id}, but the lease was lost mid-way")
+            # Always try to ack: Redis is the single judge, and rejects it if the token is stale
+            if broker.ack(task_id, token):
                 print(f"done {task_id}")
             else:
-                print(f"done {task_id}, but lease had already expired (someone may have redone it!)")
+                print(f"ack rejected for {task_id}: token {token} is stale, another worker owns it now")
     except KeyboardInterrupt:
         print("worker stopped")
 

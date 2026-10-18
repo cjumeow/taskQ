@@ -1,17 +1,17 @@
--- Heartbeat: extend this worker's lease on a task.
+-- Heartbeat: extend the current lease holder's lease on a task.
 -- KEYS[1] = queue:leased
 -- ARGV[1] = task id
--- ARGV[2] = worker id
+-- ARGV[2] = fencing token received from lease
 -- ARGV[3] = lease duration in seconds
--- Returns: 1 = extended; 0 = this worker no longer holds the lease (reaped, or re-leased by someone else)
+-- Returns: 1 = extended; 0 = the caller's lease is stale (reaped, or re-leased by someone else)
 
 local task_key = 'task:' .. ARGV[1]
 
--- The ZSET only knows task ids, so check ownership in the hash before touching the lease
-if redis.call('HGET', task_key, 'worker') ~= ARGV[2] then
+-- The ZSET only knows task ids, so check the token in the hash before touching the lease
+if redis.call('HGET', task_key, 'fencing_token') ~= ARGV[2] then
   return 0
 end
-if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then  
+if not redis.call('ZSCORE', KEYS[1], ARGV[1]) then
   return 0
 end
 

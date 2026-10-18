@@ -31,9 +31,9 @@ snapshot() {
   echo "[queue:leased]"
   rc EVAL "$LEASE_LUA" 1 queue:leased | list
   echo
-  echo "[tasks] state / attempts / worker"
+  echo "[tasks] state / token / worker"
   for k in $(rc --scan --pattern 'task:*' | sort); do
-    printf '%-34s %s\n' "$k" "$(rc HMGET "$k" state attempts worker | paste -sd' ' -)"
+    printf '%-34s %s\n' "$k" "$(rc HMGET "$k" state fencing_token worker | paste -sd' ' -)"
   done | list
 }
 

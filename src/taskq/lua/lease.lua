@@ -3,7 +3,7 @@
 -- KEYS[2] = queue:leased
 -- ARGV[1] = worker id
 -- ARGV[2] = lease duration in seconds
--- Returns: task id, or nil if the queue is empty
+-- Returns: {task id, fencing token}, or nil if the queue is empty
 
 local task_id = redis.call('RPOP', KEYS[1])
 if not task_id then
@@ -18,6 +18,7 @@ redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), task_id)
 
 local task_key = 'task:' .. task_id
 redis.call('HSET', task_key, 'state', 'running', 'worker', ARGV[1], 'leased_at', tostring(now))
-redis.call('HINCRBY', task_key, 'attempts', 1)
+-- Every lease gets a strictly larger token; ack and heartbeat must present it, so holders of older leases are rejected
+local token = redis.call('HINCRBY', task_key, 'fencing_token', 1)
 
-return task_id
+return {task_id, token}
