@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Run redis-cli inside the project's Redis container.
+# Usage: ./scripts/rc FLUSHDB
+#        ./scripts/rc LRANGE queue:ready 0 -1
+#        ./scripts/rc            (interactive redis-cli)
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# Allocate a TTY only when attached to a terminal, so piping (e.g. into xargs) still works
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker compose exec redis redis-cli "$@"
+else
+  exec docker compose exec -T redis redis-cli "$@"
+fi
