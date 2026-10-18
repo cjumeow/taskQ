@@ -10,30 +10,39 @@ rc() { docker compose exec -T redis redis-cli "$@"; }
 # Indent each line, or print (empty) when there is no output
 list() { sed '/^$/d; s/^/  /' | grep . || echo "  (empty)"; }
 
-# Remaining lease time per task, computed with Redis server time
-LEASE_LUA="local now = redis.call('TIME')
+# Seconds from now until each ZSET member's score, computed with Redis server time
+# ARGV[1] = label printed before the number, e.g. "expires in"
+UNTIL_LUA="local now = redis.call('TIME')
 local now_s = tonumber(now[1]) + tonumber(now[2]) / 1000000
 local r = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
 local out = {}
 for i = 1, #r, 2 do
-  out[#out + 1] = string.format('%-28s expires in %5.1fs', r[i], tonumber(r[i + 1]) - now_s)
+  out[#out + 1] = string.format('%-16s %s %5.1fs', r[i], ARGV[1], tonumber(r[i + 1]) - now_s)
 end
 return out"
 
 snapshot() {
   echo "taskQ dashboard  $(date +%T)"
   echo
-  echo "ready=$(rc LLEN queue:ready)  leased=$(rc ZCARD queue:leased)"
+  echo "ready=$(rc LLEN queue:ready)  leased=$(rc ZCARD queue:leased)  delayed=$(rc ZCARD queue:delayed)  dlq=$(rc LLEN queue:dlq)"
   echo
   echo "[queue:ready] (right end is leased next)"
   rc LRANGE queue:ready 0 -1 | list
   echo
   echo "[queue:leased]"
-  rc EVAL "$LEASE_LUA" 1 queue:leased | list
+  rc EVAL "$UNTIL_LUA" 1 queue:leased "expires in" | list
   echo
-  echo "[tasks] state / token / worker"
+  echo "[queue:delayed]"
+  rc EVAL "$UNTIL_LUA" 1 queue:delayed "runs in" | list
+  echo
+  echo "[queue:dlq] last_error"
+  for id in $(rc LRANGE queue:dlq 0 -1); do
+    printf '%-16s %s\n' "$id" "$(rc HGET "task:$id" last_error)"
+  done | list
+  echo
+  echo "[tasks] state / token / retries / worker"
   for k in $(rc --scan --pattern 'task:*' | sort); do
-    printf '%-34s %s\n' "$k" "$(rc HMGET "$k" state fencing_token worker | paste -sd' ' -)"
+    printf '%-22s %s\n' "$k" "$(rc HMGET "$k" state fencing_token retries worker | paste -sd' ' -)"
   done | list
 }
 
