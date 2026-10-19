@@ -1,5 +1,6 @@
 """Queue operations on Redis. Anything that touches multiple keys is a Lua script, so it runs atomically."""
 
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,14 @@ DELAYED_SET = "queue:delayed"
 DEAD_QUEUE = "queue:dlq"
 
 LUA_DIR = Path(__file__).parent / "lua"
+
+# Override with e.g. REDIS_URL=redis://localhost:6379/15 to use another database (the tests do this)
+DEFAULT_REDIS_URL = "redis://localhost:6379/0"
+
+
+def connect() -> redis.Redis:
+    """Connect to the Redis named by REDIS_URL, returning str replies instead of bytes."""
+    return redis.Redis.from_url(os.environ.get("REDIS_URL", DEFAULT_REDIS_URL), decode_responses=True)
 
 
 @dataclass

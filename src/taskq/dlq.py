@@ -7,9 +7,7 @@ Usage: uv run python -m taskq.dlq               list dead tasks and why they die
 
 import argparse
 
-import redis
-
-from taskq.broker import Broker
+from taskq.broker import Broker, connect
 
 
 def main() -> None:
@@ -21,7 +19,7 @@ def main() -> None:
     target.add_argument("--all", action="store_true", help="retry every dead task")
     args = parser.parse_args()
 
-    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+    r = connect()
     broker = Broker(r)
 
     if args.command is None:

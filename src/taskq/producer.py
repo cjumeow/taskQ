@@ -6,9 +6,7 @@ Usage: uv run python -m taskq.producer [count] [--delay SECONDS] [--max-retries 
 import argparse
 import time
 
-import redis
-
-from taskq.broker import Broker
+from taskq.broker import Broker, connect
 
 
 def main() -> None:
@@ -18,7 +16,7 @@ def main() -> None:
     parser.add_argument("--max-retries", type=int, default=3, help="retries before a task goes to the DLQ (default 3)")
     args = parser.parse_args()
 
-    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+    r = connect()
     broker = Broker(r)
 
     # Timestamp prefix keeps IDs unique across multiple producer runs

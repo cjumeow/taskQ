@@ -15,9 +15,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 
-import redis
-
-from taskq.broker import Broker
+from taskq.broker import Broker, connect
 
 WORK_SECONDS = float(os.environ.get("WORK_SECONDS", 3))  # How long the fake work takes
 FAIL_RATE = float(os.environ.get("FAIL_RATE", 0))  # Probability that the fake work raises
@@ -25,7 +23,7 @@ LEASE_SECONDS = float(os.environ.get("LEASE_SECONDS", 10))  # Task is reclaimed 
 HEARTBEAT_SECONDS = LEASE_SECONDS / 3  # Renew often enough to survive two missed heartbeats
 BACKOFF_BASE_SECONDS = float(os.environ.get("BACKOFF_BASE_SECONDS", 1))  # First retry waits about this long
 BACKOFF_MAX_SECONDS = float(os.environ.get("BACKOFF_MAX_SECONDS", 60))  # Retries never wait longer than this
-POLL_SECONDS = 0.5  # How long to wait before polling again when the queue is empty
+POLL_SECONDS = float(os.environ.get("POLL_SECONDS", 0.5))  # How long to wait before polling again when the queue is empty
 
 
 def do_work(task_id: str) -> None:
@@ -74,7 +72,7 @@ def report_failure(broker: Broker, task_id: str, token: int, error: str) -> None
 
 
 def main() -> None:
-    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
+    r = connect()
     broker = Broker(r)
     # PID alone can collide across machines, so prefix it with the hostname
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
