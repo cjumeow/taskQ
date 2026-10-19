@@ -10,3 +10,6 @@ wheels/
 .venv
 AGENTS.md
 CLAUDE.md
+
+# Local ledger written by workers (taskq.ledger)
+ledger.db*

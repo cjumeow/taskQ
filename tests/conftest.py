@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 import redis
+from helpers import wait_until
 
 from taskq.broker import Broker
+from taskq.ledger import Ledger
 
 TEST_REDIS_URL = "redis://localhost:6379/15"
 
@@ -59,7 +61,18 @@ StartWorker = Callable[..., WorkerProcess]
 
 
 @pytest.fixture
-def start_worker(r: redis.Redis, tmp_path: Path) -> Iterator[StartWorker]:
+def ledger_path(tmp_path: Path) -> Path:
+    """Each test gets its own ledger file, shared by every worker it starts."""
+    return tmp_path / "ledger.db"
+
+
+@pytest.fixture
+def ledger(ledger_path: Path) -> Ledger:
+    return Ledger(ledger_path)
+
+
+@pytest.fixture
+def start_worker(r: redis.Redis, tmp_path: Path, ledger_path: Path) -> Iterator[StartWorker]:
     """Start real worker processes on the test DB. Keyword arguments become environment variables."""
     workers: list[WorkerProcess] = []
 
@@ -67,6 +80,7 @@ def start_worker(r: redis.Redis, tmp_path: Path) -> Iterator[StartWorker]:
         env = {
             **os.environ,
             "REDIS_URL": TEST_REDIS_URL,
+            "LEDGER_PATH": str(ledger_path),
             "PYTHONUNBUFFERED": "1",
             "POLL_SECONDS": "0.05",
             "WORK_SECONDS": "0",
@@ -81,6 +95,9 @@ def start_worker(r: redis.Redis, tmp_path: Path) -> Iterator[StartWorker]:
             )
         worker = WorkerProcess(proc, log_path)
         workers.append(worker)
+        # Fail loudly here if the worker crashes on startup, instead of as a confusing assertion later
+        wait_until(lambda: "worker started" in worker.log() or not worker.is_alive())
+        assert worker.is_alive(), f"worker exited on startup:\n{worker.log()}"
         return worker
 
     yield start

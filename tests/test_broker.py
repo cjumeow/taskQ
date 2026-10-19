@@ -251,3 +251,47 @@ def test_delayed_task_does_not_run_before_it_is_due(broker: Broker, r: redis.Red
     wait_until(lambda: broker.promote() == ["t"], timeout=2, interval=0.02)
     assert time.monotonic() - started >= 0.45
     assert broker.lease("worker", 30) is not None
+
+
+# --- Producer idempotency keys ---
+
+
+def test_reusing_an_idempotency_key_returns_the_original_task(broker: Broker, r: redis.Redis) -> None:
+    first = broker.enqueue("t1", idempotency_key="order-42")
+    # The producer timed out and retried with a new task id but the same key
+    retry = broker.enqueue("t2", idempotency_key="order-42")
+
+    assert first.created
+    assert not retry.created
+    assert retry.task_id == "t1"
+    assert not r.exists("task:t2")
+    assert r.lrange(READY_QUEUE, 0, -1) == ["t1"]
+
+
+def test_a_duplicate_delayed_enqueue_schedules_nothing_new(broker: Broker, r: redis.Redis) -> None:
+    broker.enqueue("t1", delay=60, idempotency_key="order-42")
+    broker.enqueue("t2", delay=60, idempotency_key="order-42")
+
+    assert r.zrange(DELAYED_SET, 0, -1) == ["t1"]
+
+
+def test_different_idempotency_keys_create_different_tasks(broker: Broker, r: redis.Redis) -> None:
+    assert broker.enqueue("t1", idempotency_key="order-1").created
+    assert broker.enqueue("t2", idempotency_key="order-2").created
+    assert r.llen(READY_QUEUE) == 2
+
+
+def test_idempotency_key_is_forgotten_after_its_ttl(broker: Broker) -> None:
+    broker.enqueue("t1", idempotency_key="order-42", idempotency_ttl=1)
+    time.sleep(1.1)
+
+    # A retry this late is no longer recognized: the TTL bounds how late a duplicate can be caught
+    assert broker.enqueue("t2", idempotency_key="order-42", idempotency_ttl=1).created
+
+
+def test_payload_round_trips(broker: Broker) -> None:
+    broker.enqueue("t1", payload={"type": "charge", "account": "alice", "amount": 100})
+    broker.enqueue("t2")
+
+    assert broker.payload("t1") == {"type": "charge", "account": "alice", "amount": 100}
+    assert broker.payload("t2") == {}

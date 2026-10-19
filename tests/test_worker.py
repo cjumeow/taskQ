@@ -3,11 +3,13 @@
 import os
 import signal
 
+import pytest
 import redis
 from conftest import StartWorker
 from helpers import task, wait_until
 
 from taskq.broker import DEAD_QUEUE, DELAYED_SET, LEASED_SET, READY_QUEUE, Broker
+from taskq.ledger import Ledger
 
 
 def queues_drained(r: redis.Redis) -> bool:
@@ -17,10 +19,11 @@ def queues_drained(r: redis.Redis) -> bool:
 def test_all_tasks_complete_exactly_once_with_many_workers(
     broker: Broker, r: redis.Redis, start_worker: StartWorker
 ) -> None:
+    # Start the workers first: with no work to do, one early worker could otherwise drain the queue alone
+    workers = [start_worker() for _ in range(4)]
     task_ids = [f"t{i}" for i in range(1000)]
     for task_id in task_ids:
         broker.enqueue(task_id)
-    workers = [start_worker() for _ in range(4)]
 
     wait_until(lambda: queues_drained(r), timeout=60)
 
@@ -101,3 +104,51 @@ def test_paused_worker_cannot_complete_a_task_that_was_taken_over(
     assert task(r, "t")["worker"] == successor.worker_id
     assert "done t" in successor.log()
     assert "done t" not in paused.log()
+
+
+# --- Side effects on a downstream system (the ledger) when a paused worker's task is taken over ---
+
+
+@pytest.mark.parametrize(
+    ("guard", "pause", "charged_tokens"),
+    [
+        # No guard: both workers charge, whichever order they do it in
+        ("none", "before_charge", [2, 1]),
+        ("none", "after_charge", [1, 2]),
+        # dedupe: only the first charge for the task gets through
+        ("dedupe", "before_charge", [2]),
+        ("dedupe", "after_charge", [1]),
+        # fence: catches the old worker if it charges late, but not if it charged before pausing
+        ("fence", "before_charge", [2]),
+        ("fence", "after_charge", [1, 2]),
+    ],
+)
+def test_paused_worker_and_its_successor_charge_the_ledger(
+    broker: Broker,
+    r: redis.Redis,
+    start_worker: StartWorker,
+    ledger: Ledger,
+    guard: str,
+    pause: str,
+    charged_tokens: list[int],
+) -> None:
+    broker.enqueue("t", payload={"type": "charge", "account": "alice", "amount": 100})
+    if pause == "before_charge":
+        # Paused while still working, before it gets to the charge
+        paused = start_worker(LEDGER_GUARD=guard, WORK_SECONDS=1.5, LEASE_SECONDS=0.6)
+        wait_until(lambda: task(r, "t").get("worker") == paused.worker_id)
+    else:
+        # Paused after the charge was written, before the ack
+        paused = start_worker(LEDGER_GUARD=guard, AFTER_EFFECT_SECONDS=1.5, LEASE_SECONDS=0.6)
+        wait_until(lambda: len(ledger.charges_for("t")) == 1)
+    os.kill(paused.pid, signal.SIGSTOP)
+
+    successor = start_worker(LEDGER_GUARD=guard, WORK_SECONDS=0.2, LEASE_SECONDS=0.6)
+    wait_until(lambda: task(r, "t")["state"] == "completed")
+    os.kill(paused.pid, signal.SIGCONT)
+    wait_until(lambda: "ack rejected for t" in paused.log())
+
+    # The queue's own state is right in every case: fencing tokens see to that
+    assert task(r, "t")["worker"] == successor.worker_id
+    # What happens downstream depends on the guard
+    assert [token for token, _ in ledger.charges_for("t")] == charged_tokens
