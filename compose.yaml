@@ -1,5 +1,13 @@
 services:
   redis:
     image: redis:7.4-alpine
+    # AOF logs every write and fsyncs it once a second, so a crash (not just a clean shutdown) loses at most ~1s
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
+    volumes:
+      # Keep the data when the container is re-created (e.g. docker compose down / up)
+      - redis-data:/data
+
+volumes:
+  redis-data:

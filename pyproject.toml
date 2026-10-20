@@ -22,3 +22,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "outage: stops, pauses, or kills the shared Redis container (deselect with -m \"not outage\")",
+]

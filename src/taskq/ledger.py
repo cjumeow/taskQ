@@ -63,7 +63,9 @@ class Ledger:
         # isolation_level=None turns off implicit transactions, so the explicit BEGIN below is the only one.
         # timeout makes concurrent workers wait for the write lock instead of failing.
         # (Not WAL: switching a fresh file to WAL from several processes at once can fail with "database is locked")
-        self._db = sqlite3.connect(path, timeout=10, isolation_level=None)
+        # check_same_thread=False: the worker opens the ledger on its main thread but charges from its handler
+        # thread. That is safe because only one handler uses the connection at a time.
+        self._db = sqlite3.connect(path, timeout=10, isolation_level=None, check_same_thread=False)
         self._db.executescript(SCHEMA)
 
     @contextmanager

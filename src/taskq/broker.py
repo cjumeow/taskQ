@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 import redis
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.retry import Retry
 
 READY_QUEUE = "queue:ready"
 LEASED_SET = "queue:leased"
@@ -23,9 +25,26 @@ IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
 
+# Errors that mean "Redis is unreachable right now", as opposed to a bug such as a failing script
+REDIS_DOWN = (redis.ConnectionError, redis.TimeoutError)
+
+
 def connect() -> redis.Redis:
     """Connect to the Redis named by REDIS_URL, returning str replies instead of bytes."""
-    return redis.Redis.from_url(os.environ.get("REDIS_URL", DEFAULT_REDIS_URL), decode_responses=True)
+    timeout = float(os.environ.get("REDIS_TIMEOUT_SECONDS", 5))
+    return redis.Redis.from_url(
+        os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
+        decode_responses=True,
+        # Give up on a command that gets no reply instead of hanging, so callers notice Redis is down
+        socket_timeout=timeout,
+        socket_connect_timeout=timeout,
+        # Ride out a brief blip by retrying a command a few times, then let the caller handle the outage.
+        # A retried script can run twice when only its reply was lost. That is safe for ack, fail,
+        # heartbeat and release (the second run fails its token and lease checks) and for lease (the
+        # extra task sits leased until it is reaped). A retried enqueue without an idempotency key can
+        # create a duplicate task.
+        retry=Retry(ExponentialWithJitterBackoff(base=0.05, cap=0.5), retries=3),
+    )
 
 
 @dataclass
@@ -55,6 +74,7 @@ class Broker:
         self._reap = r.register_script((LUA_DIR / "reap.lua").read_text())
         self._promote = r.register_script((LUA_DIR / "promote.lua").read_text())
         self._retry_dead = r.register_script((LUA_DIR / "retry_dead.lua").read_text())
+        self._release = r.register_script((LUA_DIR / "release.lua").read_text())
 
     def enqueue(
         self,
@@ -116,6 +136,10 @@ class Broker:
                 return FailResult("dead", int(retries))
             case _:
                 return FailResult("stale")
+
+    def release(self, task_id: str, token: int) -> bool:
+        """Give a leased task back to ready without using up a retry. False means the token is stale."""
+        return self._release(keys=[LEASED_SET, READY_QUEUE], args=[task_id, token]) == 1
 
     def heartbeat(self, task_id: str, token: int, lease_seconds: float) -> bool:
         """Extend the lease. False means the token is stale and the task is no longer this worker's."""
