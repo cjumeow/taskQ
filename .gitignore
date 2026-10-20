@@ -13,3 +13,6 @@ CLAUDE.md
 
 # Local ledger written by workers (taskq.ledger)
 ledger.db*
+
+# Chaos test runs (taskq.chaos): logs, ledgers, reports
+.chaos/

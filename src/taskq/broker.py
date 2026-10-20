@@ -3,6 +3,7 @@
 import json
 import os
 import random
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -48,6 +49,18 @@ def connect() -> redis.Redis:
 
 
 @dataclass
+class NewTask:
+    """A task to enqueue; see Broker.enqueue for what each field means."""
+
+    task_id: str
+    delay: float = 0
+    max_retries: int = 3
+    payload: dict[str, Any] | None = None
+    idempotency_key: str | None = None
+    idempotency_ttl: int = IDEMPOTENCY_TTL_SECONDS
+
+
+@dataclass
 class Enqueued:
     task_id: str
     # False when the idempotency key was already used: task_id is then the original task, nothing new was created
@@ -90,19 +103,31 @@ class Broker:
         If idempotency_key was already used within idempotency_ttl, nothing is created and the
         original task's ID is returned with created=False.
         """
-        result = self._enqueue(
-            keys=[READY_QUEUE, DELAYED_SET],
-            args=[
-                task_id,
-                delay,
-                max_retries,
-                json.dumps(payload) if payload is not None else "",
-                idempotency_key or "",
-                idempotency_ttl,
-            ],
-        )
-        existing_or_new_id, created = result
-        return Enqueued(existing_or_new_id, created == 1)
+        return self.enqueue_many([NewTask(task_id, delay, max_retries, payload, idempotency_key, idempotency_ttl)])[0]
+
+    def enqueue_many(self, tasks: Sequence[NewTask], batch_size: int = 1000) -> list[Enqueued]:
+        """Enqueue many tasks, sending them in pipelined batches instead of one round trip each.
+
+        Each task is still created by its own atomic script run; only the network round trips are batched.
+        """
+        results: list[Enqueued] = []
+        for start in range(0, len(tasks), batch_size):
+            pipe = self._r.pipeline(transaction=False)
+            for task in tasks[start : start + batch_size]:
+                self._enqueue(
+                    keys=[READY_QUEUE, DELAYED_SET],
+                    args=[
+                        task.task_id,
+                        task.delay,
+                        task.max_retries,
+                        json.dumps(task.payload) if task.payload is not None else "",
+                        task.idempotency_key or "",
+                        task.idempotency_ttl,
+                    ],
+                    client=pipe,
+                )
+            results += [Enqueued(task_id, created == 1) for task_id, created in pipe.execute()]
+        return results
 
     def payload(self, task_id: str) -> dict[str, Any]:
         """The task's payload, or {} if it was enqueued without one."""
