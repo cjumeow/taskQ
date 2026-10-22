@@ -6,7 +6,7 @@ The worker runs a simulated handler (sleep, optional random failure, optional le
 
 ## Guarantees
 
-| | |
+| Guarantees | Description |
 |---|---|
 | **Delivery** | At-least-once. A task is never lost: it ends up `completed` or in the DLQ. |
 | **Effect** | Exactly-once *effect* when the side effect is idempotent. The demo ledger achieves this with the `dedupe` guard. |
